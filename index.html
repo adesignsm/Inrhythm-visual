@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.6.0/p5.min.js" integrity="sha512-3RlxD1bW34eFKPwj9gUXEWtdSMC59QqIqHnD8O/NoTwSJhgxRizdcFVQhUMFyTp5RwLTDL0Lbcqtl8b7bFAzog==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.4.0/addons/p5.sound.min.js"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/svg.js/3.1.2/svg.min.js"></script>
+
+        <style type="text/css">
+            body {
+                background: #000;
+                padding: 0;
+                margin: 0;
+                overflow: hidden;
+                scale: 1;
+            }
+
+            canvas {
+                position: absolute;
+                opacity: 0;
+                z-index: -1;
+            }
+        </style>
+    </head>
+
+    <body>
+        <script type="text/javascript">
+            let audio;
+            let noiseScale = 10;
+            let customFrameCount = 0;
+
+            let fireColors = ['#6259ff', '#5e3c58', '#3f50a3'];
+            let blobs = [];
+            let numBlobs = 125;
+
+            let fft;
+            let svg;
+
+            function setup() {
+                createCanvas(window.innerWidth, window.innerHeight);
+                colorMode(HSL);
+
+                getAudioContext().suspend();
+
+                svg = SVG().addTo('body').size(window.innerWidth, window.innerHeight);
+
+                gradientFire = [];
+
+                for (let i = 0; i < fireColors.length; i++) {
+                    gradientFire.push(svg.gradient('linear', function (add) {
+                        add.stop(0, fireColors[i]);
+                        add.stop(0.8, lightenColor(fireColors[i], 20));
+                    }).from(0.5, 1).to(0, 0));
+                }
+
+                let group = makeFilter();
+
+                for (let i = 0; i < numBlobs; i++) {
+                    let colorIndex = i % fireColors.length;
+                    let opacity = random(0.1, 1);
+                    blobs.push(new Lava(group, fireColors[colorIndex], opacity));
+                }
+
+                group.fill('#ff9f60');
+            }
+
+            function mousePressed() {
+                userStartAudio();
+                audio = new p5.AudioIn();
+
+                if (audio) {
+                    audio.start();
+                    audio.amp(0.5);
+
+                    fft = new p5.FFT();
+                    fft.setInput(audio);
+                }
+            }
+
+            function makeFilter() {
+                let filter = svg.element('filter').attr('id', 'goo');
+
+                filter.add(svg.element('feGaussianBlur').attr({
+                    in: "SourceGraphic",
+                    stdDeviation: 10,
+                    result: "blur",
+                }));
+
+                filter.add(svg.element('feColorMatrix').attr({
+                    in: "blur",
+                    type: "matrix",
+                    values: "1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 19 -9",
+                    result: "goo",
+                }));
+
+                filter.add(svg.element('feComposite').attr({
+                    in: "SourceGraphic",
+                    in2: "goo",
+                    operator: "atop",
+                }));
+
+                return svg.group().attr('filter', 'url(#goo)');
+            }
+
+            function draw() {
+                background(0);
+                frameRate(60);
+
+                if (fft) {
+                    let spectrum = fft.analyze();
+                    let bass = Math.floor(fft.getEnergy("bass", [0, 200]));
+                    let treble = Math.floor(fft.getEnergy("treble", [0, 10]));
+                    let lowMid = Math.floor(fft.getEnergy("lowMid", [0, 200]));
+
+                    for (let blob of blobs) blob.update(bass, treble, lowMid);
+                }
+            }
+
+
+            class Lava {
+                constructor(group, color, opacity) {
+                    let x = random(window.innerWidth);
+                    let y = random(window.innerHeight);
+
+                    this.pos = createVector(x, y);
+                    this.vel = createVector(0, 0);
+                    this.temp = 10;
+
+                    this.size = random(50, 300);
+                    this.sizeTime = random(10);
+
+                    let colorIndex = fireColors.indexOf(color);
+                    if (colorIndex === -1) {
+                        console.error("Invalid color:", color);
+                        colorIndex = 0;
+                    }
+
+                    this.el = svg
+                        .ellipse(this.size, this.size)
+                        .center(this.pos.x, this.pos.y)
+                        .fill(gradientFire[colorIndex])
+                        .opacity(opacity);
+
+                    group.add(this.el);
+                }
+
+                update(bass, treble, lowMid) {
+                    let reactProbability = 0.05;
+
+                    if (random() < reactProbability) {
+                        let targetAccX = map(1, 0, 255, -0.05, 0.05) + random(-0.01, 0.01); 
+                        let targetAccY = map(1, 0, 255, -0.05, 0.05) + random(-0.01, 0.01);
+
+                        let easing = 0.00005;
+
+                        let accX = this.ease(this.vel.x, targetAccX, easing); 
+                        let accY = this.ease(this.vel.y, targetAccY, easing);
+
+                        this.vel.add(createVector(accX, accY));
+                        this.vel.limit(0.5);
+                        this.pos.add(this.vel);
+                    }
+
+                    if (this.pos.x < 0 || this.pos.x > width) {
+                        this.pos.x = random(width / 2);
+                    }
+
+                    if (this.pos.y < 0 || this.pos.y > height) {
+                        this.pos.y = height;
+
+                        if (this.pos.y < 0) {
+                            this.pos.y = height;
+                        }
+                    }
+
+                    let a = this.sizeTime;
+                    let as = 0.2;
+                    let sizeX = (1 + sin(a + (bass * 0.07)) * as) * this.size;
+                    let sizeY = (1 + sin(a + (treble * 0.07) + PI) * as) * this.size;
+
+                    this.sizeTime += abs(this.vel.mag()) * 0.05 + 0.005;
+
+                    this.el
+                        .size(sizeX, sizeY)
+                        .center(this.pos.x, this.pos.y);
+                }
+
+                ease(current, target, easing) {
+                    return current + (target - current) * easing;
+                }
+            }
+
+            function lightenColor(col, amt) {
+                var usePound = false;
+                if (col[0] === "#") {
+                    col = col.slice(1);
+                    usePound = true;
+                }
+                var num = parseInt(col, 16);
+                var r = Math.max(0, (num >> 16) - amt);
+                var b = Math.max(0, ((num >> 8) & 0x00ff) - amt);
+                var g = Math.max(0, (num & 0x0000ff) - amt);
+                return (usePound ? "#" : "") + (g | (b << 8) | (r << 16)).toString(16);
+            }
+        </script>
+    </body>
+</html>
